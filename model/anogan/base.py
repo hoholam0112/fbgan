@@ -1,4 +1,4 @@
-import tensorflow as tf, numpy as np
+import tensorflow as tf
 from tensorflow.contrib.framework import arg_scope
 from tensorflow.contrib.layers import conv2d, conv2d_transpose, fully_connected, batch_norm
 
@@ -25,7 +25,7 @@ def default_arg_scope(is_training,
                                       'fused':True}) as sc:
         return sc
 
-class AnoGAN:
+class BaseAnoGAN:
     def __init__(self,
                  latent_dim,
                  iters_for_encoding):
@@ -61,6 +61,11 @@ class AnoGAN:
         # Initilizers for variables for test
         self.init_op_test = tf.variables_initializer(tf.global_variables('test_scope'))
 
+    def get_default_session(self):
+        sess = tf.get_default_session()
+        if sess is None:
+            raise RuntimeError('this method must be called within tf.Session context manager')
+        return sess
 
     def discriminator(self,
                       tensor_x,
@@ -75,16 +80,7 @@ class AnoGAN:
             probs: Tensor of shape [batch, 1], probability that given data points are from a true data distribution
             disc_features: Tensor of shape [batch, feature_dim], discriminative feature vectors
         """
-        h = OrderedDict() # Intermediate outputs 
-        with arg_scope(default_arg_scope(is_training)):
-            with tf.variable_scope('discriminator', reuse=tf.AUTO_REUSE):
-                h = conv2d(tensor_x, num_outputs=64, kernel_size=4, stride=2, scope='conv1')
-                h = conv2d(h, num_outputs=128, kernel_size=4, stride=2, scope='conv2')
-                h = conv2d(h, num_outputs=32, kernel_size=4, stride=1, scope='conv3')
-                disc_features = tf.layers.flatten(h, name='flatten')
-                h = fully_connected(disc_features, num_outputs=1, activation_fn=None, normalizer_fn=None, 'output')
-                probs = tf.math.sigmoid(h, name='sigmoid')
-        return probs, disc_features
+        raise NotImplementedError('This function should be implemented.')
 
     def decoder(self,
                 tensor_z,
@@ -98,89 +94,90 @@ class AnoGAN:
         Returns:
             output_tensor: Tensor of shape [batch, height, width, channel]
         """
-        with arg_scope(default_arg_scope(is_training)):
-            with tf.variable_scope('decoder', reuse=tf.AUTO_REUSE):
-                h = fully_connected(tensor_z, num_outputs=7*7*128, scope='linear_transform')
-                h = conv2d_transpose(h, num_outputs=64, kernel_size=4, stride=2, scope='trans_conv1')
-                h = conv2d_transpose(h, num_outputs=1, kernel_size=4, stride=2, scope='trans_conv2')
-                output_tensor = tf.math.tanh(h, name='tanh')
-        return output_tensor
+        raise NotImplementedError('This function should be implemented.')
 
     def build_anomaly_score_function(self,
                                      tensor_x,
-                                     order):
+                                     labels,
+                                     order_norm,
+                                     scoring_method,
+                                     disc_weight):
         """ Find a latent point z which minimize the residual error between original and reconstructed samples
 
         Args:
             tensor_x: Tensor of shape [batch, height, width, channel]
-            order: Integer, used for computing norm
+            labels: Tensor of shape [batch]. Binary labels. 1 is abnormal and 0 is normal.
+            order_norm: Integer, used for computing norm.
+            scoring_method: String, define how to use discriminative score. \'xent\' for cross entropy or \'fm\' for feature matching error.
+            disc_weight: Float, weight for discriminative score in [0,1]. Weight for residual error is defined as 1-disc_weight.
 
         Returns:
             anomaly_score: Function which returns anomaly scores
 
         """
+        assert scoring_method in ['xent', 'fm']
+        assert disc_weight >= 0 and disc_weight <= 1
+
         # Build computational graphs for encoding 
         with tf.name_scope('anomaly_score'):
-            x_recon = self.decoder(self.latent_points, is_training=False)
+            x_hat = self.decoder(self.latent_points, is_training=False)
 
             # Residual score 
-            delta = tf.layer.flatten(x_recon - tensor_x, name='delta')
-            residual_error = tf.norm(delta, ord=order, axis=-1, name='residual_error')
+            delta = tf.layer.flatten(x_hat - tensor_x, name='delta')
+            residual_error = tf.norm(delta, ord=order_norm, axis=-1, name='residual_error')
             mean_residual_error = tf.reduce_sum(residual_error, name='mean_residual_error')
 
             # Discriminative score 
             y_real, features_real = self.discriminator(tensor_x, is_training=False)
-            y_recon, features_recon = self.discriminator(x_recon, is_training=False)
+            y_recon, features_recon = self.discriminator(x_hat, is_training=False)
             y_recon = tf.squeeze(y_recon)
-            disc_feature_error = tf.norm(features_real - features_recon, ord=order, axis=-1)
+            disc_feature_error = tf.norm(features_real - features_recon, ord=order_norm, axis=-1)
 
             train_for_encoding = self.optimizer_for_encoding.minimize(mean_residual_error,
                                                                       global_step=self.test_step,
                                                                       var_list=[self.latent_points],
                                                                       name='train_for_encoding')
 
-        def anomaly_score_fn(sess,
-                             scoring_method,
-                             disc_weight,
-                             feed_dict={}):
+            disc_score = -y_recon if scoring_method == 'xent' else disc_feature_error
+            anomaly_score = (1-disc_weight)*residual_error + disc_weight*disc_score
+
+        def anomaly_score_fn(feed_dict={}):
             """ compute anomaly scores and returns reconstructed images
 
             Args:
-                sess: tf.Session
-                scoring_method: String, define how to use discriminative score. \'xent\' for cross entropy or \'fm\' for feature matching error.
-                disc_weight: Float, weight for discriminative score in [0,1]. Weight for residual error is defined as 1-disc_weight.
-                feed_dict: optional feed_dict argument for sess.run
+                feed_dict: optional feed_dict argument
 
             Returns:
-                scores: numpy 1d-array of type float. Anomaly scores for samples.
-                x_recon_val: numpy 4d-array of shape [batch, height, width, channel]. Reconstruced images.
+                scores_val: numpy 1d-array of type float. Anomaly scores for samples.
+                labels_val: numpy 1d-array of type float. Anomaly labels. 1 is abnormal and 0 is normal.
+                x_hat_val: numpy 4d-array of shape [batch, height, width, channel]. Reconstruced images.
 
             """
-            assert scoring_method in ['xent', 'fm']
-            assert disc_weight >= 0 and disc_weight <= 1
-
             # Initailize variables for encoding
+            sess = self.get_default_session()
             sess.run(self.init_op_test)
 
             # Update random latent points to minimize residual error
             for _ in range(self.iters_for_encoding):
                 sess.run(train_for_encoding)
 
-            disc_score = -y_recon if scoring_method == 'xent' else disc_feature_error
-            anomaly_score = (1-disc_weight)*residual_error + disc_weight*disc_score
-            anomaly_score_val, x_recon_val = sess.run([anomaly_score, x_recon], feed_dict=feed_dict)
-            return anomaly_score_val, x_recon_val
+            scores_val, labels_val, x_hat_val = sess.run([anomaly_score, labels, x_hat], feed_dict=feed_dict)
+            return scores_val, labels_val, x_hat
 
         return anomaly_score_fn
 
     def build_train_function(self,
                              tensor_x,
-                             tensor_z):
+                             tensor_z,
+                             learning_rate,
+                             decay_rate):
         """ Build loss and training graph and create function which performs update on a batch
 
         Args:
             tensor_x: Tensor of shape [batch, *input_shape]. Batch of input data from true data distribution.
             tensor_z: Tensor of shape [batch, latent_dim]. Batch of latent samples from pre-defined prior distribution.
+            learning_rate: Tensor or scala. Learning rate to be used for optimization.
+            decay_rate: Tensor or scala. Weight decay rate to be used for optimization.
 
         Returns:
             train_fn: Function which performs training on a batch and returns loss values
@@ -198,8 +195,8 @@ class AnoGAN:
 
         with tf.variable_scope('optimizer_train'):
             optimizer = {}
-            optimizer['discriminator'] = tf.contrib.opt.AdamWOptimizer(weight_decay=1e-3, learning_rate=1e-3)
-            optimizer['generator'] = tf.contrib.opt.AdamWOptimizer(weight_decay=1e-3, learning_rate=1e-3)
+            optimizer['discriminator'] = tf.contrib.opt.AdamWOptimizer(weight_decay=decay_rate, learning_rate=learning_rate)
+            optimizer['generator'] = tf.contrib.opt.AdamWOptimizer(weight_decay=decay_rate, learning_rate=learning_rate)
 
         # Define train op
         train_op = {}
@@ -208,28 +205,20 @@ class AnoGAN:
             with tf.control_dependencies(update_ops):
                 train_op[scope] = optimizer[scope].minimize(loss[scope], var_list=tf.trainable_variable(scope))
 
-        def train_fn(sess, feed_dict={}):
+        def train_fn():
             """ Train data on a batch
 
             Args:
-                sess: tf.Session
-                feed_dict: dictionary, optinal feed_dict for sess.run
+                feed_dict: dictionary, optinal feed_dict
 
             Returns:
                 loss_val: Dictionary which maps loss name (string) to loss value (float).
             """
+            sess = self.get_default_session()
             loss_val = {}
             for scope in ['discriminator', 'generator']:
-                loss_val[scope], _ = sess.run([loss[scope], train_op[scope]], feed_dict=feed_dict)
+                loss_val[scope], _ = sess.run([loss[scope], train_op[scope]])
             return loss_val
 
         return train_fn
-
-
-
-
-
-
-
-
 

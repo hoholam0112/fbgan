@@ -15,9 +15,9 @@ class AnomalyDetectionDataset(TFObjectWrapper):
                  is_training):
         """ Initialize a AnomalyDetectionDataset instance
         Args:
-            batch_size: Integer, the number of samples in a batch.
             features: Numpy array of shape [nb_data, *input_shape]. Input features.
             labels: Numpy array of shape [nb_data]. Anomaly label
+            batch_size: Integer, the number of samples in a batch.
             is_training: Boolean, whether this dataset to be used for training or inference.
         Returns:
             A AnomalyDetectionDataset instance
@@ -42,7 +42,7 @@ class AnomalyDetectionDataset(TFObjectWrapper):
 
     def initialize(self):
         if self.is_training:
-            raise ValueError('When self.is_training is True, self.dataset cannot be initialized')
+            raise ValueError('When is_training is True, dataset cannot be initialized')
         else:
             sess = self.get_current_session()
             sess.run(self.iterator.initializer)

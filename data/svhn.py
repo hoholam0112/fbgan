@@ -1,13 +1,12 @@
-import numpy as np
+import sys, os
 import scipy.io
-import sys
-import matplotlib.pyplot as plt
+import numpy as np
+from subprocess import call
 
 _RANDOM_SEED = 0
 _TRAIN_SET_RATIO = 0.8 # Proportion of total normal data to be used as train_set
-_TRAIN_PATH = './data/source/svhn/train_32x32.mat'
-_TEST_PATH = './data/source/svhn/test_32x32.mat'
-_EXTRA_PATH = './data/source/svhn/extra_32x32.mat'
+_TRAIN_PATH = './source/svhn/train_32x32.mat'
+_TEST_PATH = './source/svhn/test_32x32.mat'
 
 class DatasetMaker:
     """ DatasetMaker class to transform SVHN dataset for an anomaly detection task. Anomaly class is 1 (positive), Normal class is 0 (negative). """
@@ -50,6 +49,12 @@ class DatasetMaker:
         """
         return self.features_test, self.labels_test
 
+    def _download_dataset(self):
+        """ Download SVHN dataset if it has not been downloaded yet """
+        os.makedirs('./source/svhn', exist_ok=False)
+        call('wget http://ufldl.stanford.edu/housenumbers/train_32x32.mat', shell=True, cwd='./source/svhn')
+        call('wget http://ufldl.stanford.edu/housenumbers/test_32x32.mat', shell=True, cwd='./source/svhn')
+
     def _transform_labels(self, original_labels, anomaly_labels):
         """ Transform original labels to binary labels. Anomaly is 1 (positive) and normal is 0 (negative) """
         return np.array([(x in anomaly_labels) for x in original_labels], dtype=np.float32)
@@ -63,6 +68,12 @@ class DatasetMaker:
 
     def _make_dataset(self):
         """ Split dataset for anomaly detection """
+
+        # Download dataset if it has not been downloaded previously.
+        if not os.path.isdir('./source/svhn'):
+            self._download_dataset()
+
+        # Load dataset
         train_set_origin = scipy.io.loadmat(_TRAIN_PATH)
         test_set_origin = scipy.io.loadmat(_TEST_PATH)
 

@@ -90,93 +90,18 @@ class TFSaverWrapper(TFObjectWrapper):
         super(TFSaverWrapper, self).__init__()
         # Define attributes
         self.save_dir = save_dir
-        self.latest_saver = tf.train.Saver(var_list=tf.global_variables(), max_to_keep=1)
-        self.best_saver = tf.train.Saver(var_list=tf.global_variables(), max_to_keep=1)
-        self.prefix_latest = os.path.join(save_dir, 'latest')
-        self.prefix_best = os.path.join(save_dir, 'best')
+        self.saver = tf.train.Saver(var_list=tf.global_variables(), max_to_keep=1)
 
-    def checkpoint(self, is_best=False):
-        """ Checkpoint model's current traning state: Both latest and best train state
-        Args:
-            is_best: Boolean, Whether current validation performace is the best
-        Returns:
-            None
-        """
+    def checkpoint(self):
+        """ Checkpoint model's current traning state: Both latest and best train state """
         # Create save directory if it does not exist
         os.makedirs(self.save_dir, exist_ok=True)
-
         # Save current training states
         sess = self.get_current_session()
-        self.latest_saver.save(sess, self.prefix_latest)
+        self.saver.save(sess, self.save_dir)
 
-        # Save the best training states
-        if is_best:
-            self.best_saver.save(sess, self.prefix_best)
-
-    def restore_latest(self):
+    def restore(self):
         """ Restore latest training state """
         sess = self.get_current_session()
-        self.latest_saver.restore(sess, self.prefix_latest)
-
-    def restore_best(self):
-        """ Restore best training state """
-        sess = self.get_current_session()
-        self.best_saver.restore(sess, self.prefix_best)
-
-def _test_TFScalarVariableWrapper():
-    epoch = TFScalarVariableWrapper(0, tf.int64, 'epoch')
-
-    with tf.Session() as sess:
-        epoch.init()
-        print(epoch.eval())
-        epoch.assign(3)
-        print(epoch.eval())
-        epoch.assign(5)
-        print(epoch.eval())
-        epoch.init()
-        print(epoch.eval())
-
-def _test_TFSaverWrapper():
-    save_dir = './foo'
-    a = TFScalarVariableWrapper(0, tf.int64, 'a')
-    b = TFScalarVariableWrapper(0, tf.int64, 'b')
-    glob_init_op = tf.global_variables_initializer()
-    saver = TFSaverWrapper(save_dir)
-
-    with tf.Session() as sess:
-        sess.run(glob_init_op)
-        a.assign(3)
-        b.assign(5)
-        saver.checkpoint()
-        print(saver.latest_checkpoint)
-        #saver.restore_latest()
-        #saver.restore_best()
-        #print(a.eval())
-        #print(b.eval())
-
-def _test_TrainConfig():
-    #train_config = TrainConfig(init_lr = 0.1,
-    #                           epochs = 100,
-    #                           hidden_units = [10, 20, 30])
-
-    #train_config.save('sample.json')
-    train_config = TrainConfig.from_json('./sample.json')
-    #print(train_config.init_lr)
-    #print(train_config.epochs)
-    #print(train_config.hidden_units)
-
-
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--gpu', help='gpu number', type=int, default=0)
-    args = parser.parse_args()
-    os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-    os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
-
-    #_test_TFScalarVariableWrapper()
-    #_test_TFSaverWrapper()
-    _test_TrainConfig()
-
-
-
+        self.saver.restore(sess, self.save_dir)
 
