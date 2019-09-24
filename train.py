@@ -28,20 +28,7 @@ def get_dataset(train_config):
     features_train, labels_train = dataset_maker.get_train_set()
     features_test, labels_test = dataset_maker.get_test_set()
 
-    print(features_train.shape)
-    print(features_test.shape)
-    print(features_train.dtype)
-    print(features_test.dtype)
-    print(np.max(features_train))
-    print(np.max(features_test))
-    print(np.min(features_train))
-    print(np.min(features_test))
-    print(labels_train.shape)
-    print(labels_test.shape)
-    print(labels_train.dtype)
-    print(labels_test.dtype)
-
-    # Create AnomalyDetectionDataset object on train dataset
+    # Create AnomalyDetectionDataset object on training and test set
     train_set = AnomalyDetectionDataset(features=features_train,
                                         labels=labels_train,
                                         batch_size=train_config.batch_size,
@@ -53,14 +40,15 @@ def get_dataset(train_config):
     return train_set, test_set
 
 def get_model(train_config):
-    """ Import model class and create one depending on dataset """
+    """ Create a model instance from given dataset """
 
     # Import model module
-    model_module = import_module('{}.{}'.format(train_config.model, train_config.dataset))
+    model_module = import_module('model.{}.{}'.format(train_config.model, train_config.dataset))
 
     # Create Model object 
     if train_config.model == 'anogan':
-        model = model_module.AnoGAN(latent_dim=train_config.latent_dim,
+        model = model_module.AnoGAN(batch_size=train_config.batch_size,
+                                    latent_dim=train_config.latent_dim,
                                     iters_for_encoding=500)
     else:
         raise ValueError('Invalid argument has been passed for train_config.model: {}'.format(train_config.model))
@@ -80,37 +68,36 @@ def main(args):
     features_train, labels_train = train_set.get_next()
     features_test, labels_test = test_set.get_next()
 
-    with tf.Session() as sess:
-        test_set.initialize()
-        features_train_val, labels_train_val = sess.run([features_train, labels_train])
-        features_test_val, labels_test_val = sess.run([features_test, labels_test])
+    # Create a summary writer
+    logdir = os.path.join(save_dir, 'summary')
+    summary_writer = tf.contrib.summary.create_file_writer(logdir, name='summary')
+    summary_writer.set_as_default()
+    with summary_writer.as_default(), tf.contrib.summary.always_record_summaries():
+        # Crate model object 
+        model = get_model(train_config)
 
-    indices = np.random.permutation(features_train_val.shape[0])
-    images_train = (features_train_val[indices] + 1)/2.0
-    y_train = labels_train_val[indices]
+        # Build a training graph
+        z_random = tf.random.truncated_normal(shape=[train_config.batch_size, train_config.latent_dim],
+                                              name='z_random')
+        train_fn = model.build_train_function(x_tensor=features_train,
+                                              z_tensor=z_random,
+                                              learning_rate=train_config.learning_rate,
+                                              decay_rate=train_config.decay_rate)
 
-    indices = np.random.permutation(features_train_val.shape[0])
-    images_test = (features_test_val[indices] + 1)/2.0
-    y_test = labels_test_val[indices]
+        # Define some TF scalar variables to restore and save trainig state
+        with tf.variable_scope('train_state'):
+            epoch = TFScalarVariableWrapper(0, tf.int64, 'epoch')
 
-    grid_plot(train_config, images_train, y_train, num_rows=5, num_cols=5, show=False)
-    grid_plot(train_config, images_test, y_test, num_rows=5, num_cols=5, show=True)
+        # Create summary ops
+        summary_vars = model.create_summary_vars()
+        for k, v in summary_vars.items():
+            tf.contrib.summary.scalar(k + '_summary', v.variable, step=epoch.variable)
 
-    sys.exit()
-
-    # Crate model object 
-    model = get_model(train_config)
-
-    # Build a training graph
-    train_fn = model.build_train_function(x_tensor=features_train,
-                                          z_tensor=tf.random.truncated_normal(shape=[train_config.batch_size, train_config.latent_dim]))
-
-    # Define some TF scalar variables to restore and save trainig state
-    with tf.variable_scope('train_state'):
-        epoch = TFScalarVariableWrapper(0, tf.int64, 'epoch')
+        x_fake = model.decoder(z_random, is_training=False)
+        tf.contrib.summary.image('generated_images', x_fake, max_images=25, step=epoch.variable)
 
     # Create saver
-    saver = TFSaverWrapper(train_config.save_dir)
+    saver = TFSaverWrapper(save_dir)
 
     # Define an initialization op for global TF variables
     glob_init_op = tf.global_variables_initializer()
@@ -125,6 +112,9 @@ def main(args):
             sess.run(glob_init_op)
             print('Initialized global variables')
 
+        # Initialize summary ops
+        tf.contrib.summary.initialize(graph=tf.get_default_graph())
+
         while epoch.eval() < train_config.end_epoch:
             pbar = ProgressBar()
             mean_loss_val = defaultdict(lambda: 0.0)
@@ -137,10 +127,22 @@ def main(args):
                     mean_loss_val[k] += v
 
             # Averaging mean loss values and print it
+            print('epoch: {:d}/{:d}'.format(epoch.eval(), train_config.end_epoch), end='>> ')
             for k, v in mean_loss_val.items():
-                mean_loss_val[k] = v/float(train_config.iters_per_epoch)
-                print('{}: {.4f}'.format(k, mean_loss_val[k]), end=' | ')
+                mean_loss_val[k] = float(v)/train_config.iters_per_epoch
+                print('{}: {:.4f}'.format(k + '_loss', mean_loss_val[k]), end=', ')
             print('')
+
+            # Run summary ops
+            for key in mean_loss_val.keys():
+                summary_vars[key].assign(mean_loss_val[key])
+            sess.run(tf.contrib.summary.all_summary_ops())
+
+            # Increment epoch
+            epoch.assign(epoch.eval() + 1)
+
+            # Save model parameters and training status
+            saver.checkpoint()
 
 if __name__ == '__main__':
     # Parse comand line arguments
@@ -156,6 +158,8 @@ if __name__ == '__main__':
 
     # Hyperparameters associated with optimization
     parser.add_argument('--batch_size', help='Batch size', type=int, default=100)
+    parser.add_argument('--learning_rate', help='Learning rate', type=float, default=1e-3)
+    parser.add_argument('--decay_rate', help='Decay rate for weight decay regularization', type=float, default=1e-4)
     parser.add_argument('--end_epoch', help='End epoch for training', type=int)
     parser.add_argument('--iters_per_epoch', help='Number of iterations per one epoch', type=int, default=300)
     parser.add_argument('--random_seed', help='Random seed to be used', type=int, default=0)
@@ -169,7 +173,4 @@ if __name__ == '__main__':
 
     # Call main function
     main(args)
-
-
-
 
