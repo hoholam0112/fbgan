@@ -3,9 +3,9 @@ import os, argparse, json
 
 class TrainConfig:
     """ Class that have all training configurations to reproduce results """
-    def __init__(self, parsed_args):
+    def __init__(self, **kwargs):
         """ Initialize TrainCofing object from parsed arguments by argparse.ArgumentParser """
-        for k, v in parsed_args.__dict__.items():
+        for k, v in kwargs.items():
             setattr(self, k, v)
 
     @classmethod
@@ -80,28 +80,31 @@ class TFScalarVariableWrapper(TFObjectWrapper):
 
 class TFSaverWrapper(TFObjectWrapper):
     """ Class to save and restore training states of the models implemented in tensorflow V1 """
-    def __init__(self, save_dir):
+    def __init__(self, save_dir, var_list):
         """ Initialize a TfSaverWrapper object
+
         Args:
             save_dir: String, directory path to create checkpoint file
+            var_list: List of tf.Varible objects. Variables to be restored
+
         Returns:
             a TFSaverWrapper object
         """
         super(TFSaverWrapper, self).__init__()
         # Define attributes
         self.save_dir = save_dir
-        self.saver = tf.train.Saver(var_list=tf.global_variables(), max_to_keep=1)
+        self.saver = tf.train.Saver(var_list=var_list, max_to_keep=1)
 
     def checkpoint(self):
-        """ Checkpoint model's current traning state: Both latest and best train state """
+        """ Checkpoint model's current traning state """
         # Create save directory if it does not exist
         os.makedirs(self.save_dir, exist_ok=True)
         # Save current training states
         sess = self.get_current_session()
-        self.saver.save(sess, self.save_dir)
+        self.saver.save(sess, os.path.join(self.save_dir, 'ckpt'))
 
     def restore(self):
         """ Restore latest training state """
         sess = self.get_current_session()
-        self.saver.restore(sess, self.save_dir)
+        self.saver.restore(sess, os.path.join(self.save_dir, 'ckpt'))
 

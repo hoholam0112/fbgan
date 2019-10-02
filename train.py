@@ -16,7 +16,7 @@ def get_train_config(args, json_path):
         train_config = TrainConfig.from_json(json_path)
         print('A TrainConfig object is loaded from a .json file')
     else:
-        train_config = TrainConfig(args)
+        train_config = TrainConfig(**args.__dict__)
         print('A TrainConfig object is creatd from parsed arguements')
     return train_config
 
@@ -28,18 +28,22 @@ def get_dataset(train_config):
     features_train, labels_train = dataset_maker.get_train_set()
     features_test, labels_test = dataset_maker.get_test_set()
 
-    # Create AnomalyDetectionDataset object on training and test set
+    # Create AnomalyDetectionDataset object from training set 
     train_set = AnomalyDetectionDataset(features=features_train,
                                         labels=labels_train,
                                         batch_size=train_config.batch_size,
                                         is_training=True)
+
+    # Create AnomalyDetectionDataset object from test set 
     test_set = AnomalyDetectionDataset(features=features_test,
                                        labels=labels_test,
                                        batch_size=train_config.batch_size,
                                        is_training=False)
     return train_set, test_set
 
-def get_model(train_config):
+def get_model(x_tensor_train,
+              z_tensor_train,
+              train_config):
     """ Create a model instance from given dataset """
 
     # Import model module
@@ -47,9 +51,18 @@ def get_model(train_config):
 
     # Create Model object 
     if train_config.model == 'anogan':
-        model = model_module.AnoGAN(batch_size=train_config.batch_size,
+        model = model_module.AnoGAN(x_tensor_train,
+                                    z_tensor_train,
+                                    batch_size=train_config.batch_size,
                                     latent_dim=train_config.latent_dim,
+                                    learning_rate=train_config.learning_rate,
                                     iters_for_encoding=500)
+    elif train_config.model == 'bigan':
+        model = model_module.BiGAN(x_tensor_train,
+                                   z_tensor_train,
+                                   batch_size=train_config.batch_size,
+                                   latent_dim=train_config.latent_dim,
+                                   learning_rate=train_config.learning_rate)
     else:
         raise ValueError('Invalid argument has been passed for train_config.model: {}'.format(train_config.model))
     return model
@@ -66,7 +79,8 @@ def main(args):
     # Get input pipeline
     train_set, test_set = get_dataset(train_config)
     features_train, labels_train = train_set.get_next()
-    features_test, labels_test = test_set.get_next()
+    z_random = tf.random.normal(shape=[train_config.batch_size, train_config.latent_dim],
+                                name='z_random')
 
     # Create a summary writer
     logdir = os.path.join(save_dir, 'summary')
@@ -74,30 +88,21 @@ def main(args):
     summary_writer.set_as_default()
     with summary_writer.as_default(), tf.contrib.summary.always_record_summaries():
         # Crate model object 
-        model = get_model(train_config)
-
-        # Build a training graph
-        z_random = tf.random.truncated_normal(shape=[train_config.batch_size, train_config.latent_dim],
-                                              name='z_random')
-        train_fn = model.build_train_function(x_tensor=features_train,
-                                              z_tensor=z_random,
-                                              learning_rate=train_config.learning_rate,
-                                              decay_rate=train_config.decay_rate)
+        model = get_model(features_train, z_random, train_config)
 
         # Define some TF scalar variables to restore and save trainig state
         with tf.variable_scope('train_state'):
             epoch = TFScalarVariableWrapper(0, tf.int64, 'epoch')
 
         # Create summary ops
-        summary_vars = model.create_summary_vars()
-        for k, v in summary_vars.items():
+        for k, v in model.summary_vars.items():
             tf.contrib.summary.scalar(k + '_summary', v.variable, step=epoch.variable)
 
         x_fake = model.decoder(z_random, is_training=False)
         tf.contrib.summary.image('generated_images', x_fake, max_images=25, step=epoch.variable)
 
     # Create saver
-    saver = TFSaverWrapper(save_dir)
+    saver = TFSaverWrapper(save_dir, tf.global_variables())
 
     # Define an initialization op for global TF variables
     glob_init_op = tf.global_variables_initializer()
@@ -120,8 +125,7 @@ def main(args):
             mean_loss_val = defaultdict(lambda: 0.0)
             for _ in pbar(range(train_config.iters_per_epoch)):
                 # Perform gradient descent on a batch of training data
-                loss_val = train_fn()
-
+                loss_val = model.train_on_batch()
                 # loss values
                 for k, v in loss_val.items():
                     mean_loss_val[k] += v
@@ -135,7 +139,7 @@ def main(args):
 
             # Run summary ops
             for key in mean_loss_val.keys():
-                summary_vars[key].assign(mean_loss_val[key])
+                model.summary_vars[key].assign(mean_loss_val[key])
             sess.run(tf.contrib.summary.all_summary_ops())
 
             # Increment epoch
@@ -143,6 +147,11 @@ def main(args):
 
             # Save model parameters and training status
             saver.checkpoint()
+
+            # Save TrainConfig object as .json file
+            if not os.path.exists(json_path):
+                train_config.save(json_path)
+                print('A TrainConfig object is saved as a .json file')
 
 if __name__ == '__main__':
     # Parse comand line arguments

@@ -4,12 +4,14 @@ from collections import defaultdict
 
 import tensorflow as tf, numpy as np
 import matplotlib.pyplot as plt
+import progressbar
 from sklearn.metrics import roc_auc_score, precision_recall_curve, auc, roc_curve
 
 # Custom libs
 from utils import TrainConfig, TFScalarVariableWrapper, TFSaverWrapper
 from input_pipeline import AnomalyDetectionDataset
 from train import get_dataset, get_model
+from visualize import grid_plot
 
 # Define evaluation metric function
 def compute_aupr_score(y_trues, y_preds):
@@ -22,7 +24,7 @@ def compute_aupr_score(y_trues, y_preds):
     Returns:
         score: float, AUPR score
     """
-    precision, recall, thresholds = precision_recall_curve(y_labels, y_preds)
+    precision, recall, thresholds = precision_recall_curve(y_trues, y_preds)
     return auc(recall, precision)
 
 def compute_f1_score(y_trues, y_preds, prevalance):
@@ -52,9 +54,12 @@ def main(args):
     train_set, test_set = get_dataset(train_config)
     features_train, labels_train = train_set.get_next()
     features_test, labels_test = test_set.get_next()
+    z_random = tf.random.normal(shape=[train_config.batch_size, train_config.latent_dim],
+                                dtype=tf.float32,
+                                name='z_random')
 
     # Crate model object 
-    model = get_model(train_config)
+    model = get_model(features_train, z_random, train_config)
 
     # Build a test graph
     anomaly_score_fn = model.build_anomaly_score_function(x_tensor=features_test,
@@ -63,12 +68,10 @@ def main(args):
                                                           scoring_method=args.scoring_method,
                                                           disc_weight=args.disc_weight)
 
-    # Define some TF scalar variables to restore and save trainig state
-    with tf.variable_scope('train_state'):
-        epoch = TFScalarVariableWrapper(0, tf.int64, 'epoch')
+    x_fake = model.decoder(z_random, is_training=False)
 
     # Create saver
-    saver = TFSaverWrapper(train_config.save_dir)
+    saver = TFSaverWrapper(save_dir, var_list=model.vars_to_restore)
 
     # Set random seed
     tf.random.set_random_seed(train_config.random_seed)
@@ -80,19 +83,18 @@ def main(args):
 
         # Perform test
         test_set.initialize()
-        total_values = defaultdict(lambda: [])
+        output_values_total = defaultdict(lambda: [])
         try:
             max_value = progressbar.UnknownLength
             with progressbar.ProgressBar(max_value) as pbar:
                 iters = 0
                 while True:
                     # Run the graph
-                    scores_val, labels_val, x_hat_val = anomaly_score_fn()
+                    output_values = anomaly_score_fn()
 
                     # Append graph run results 
-                    total_values['score'].append(scores_val)
-                    total_values['label'].append(labels_val)
-                    total_values['x_hat'].append(x_hat_val)
+                    for k, v in output_values.items():
+                        output_values_total[k].append(v)
 
                     # Update iters
                     iters += 1
@@ -100,17 +102,31 @@ def main(args):
         except tf.errors.OutOfRangeError:
             pass
 
+        x_fake_val = sess.run(x_fake)
+
     # Concatenate all values
-    for k in total_values.keys():
-        total_values[k] = np.concatenate(total_values[k], axis=0)
+    for k, v in output_values_total.items():
+        output_values_total[k] = np.concatenate(v, axis=0)
 
     # Compute evaluation metrics
     metrics = {}
-    metrics['AUROC'] = roc_auc_score(labels_total, scores_total)
-    metrics['AUPR'] = compute_aupr_score(labels_total, scores_total)
+    metrics['AUROC'] = roc_auc_score(output_values_total['label'], output_values_total['score'])
+    metrics['AUPR'] = compute_aupr_score(output_values_total['label'], output_values_total['score'])
 
+    # Show performance of a model
     for k, v in metrics.items():
         print('{}: {:.4f}'.format(k,v))
+
+    # Show qualitative results
+    indices_rand = np.random.permutation(output_values_total['x_real'].shape[0])
+    images_shuffled = output_values_total['x_real'][indices_rand]
+    reconstructs_shuffled = output_values_total['x_hat'][indices_rand]
+    labels_shuffled = output_values_total['label'][indices_rand]
+
+
+    grid_plot(train_config, images_shuffled, labels_shuffled, num_rows=5, num_cols=5, show=False)
+    grid_plot(train_config, x_fake_val, np.zeros([x_fake_val.shape[0]]), num_rows=5, num_cols=5, show=False)
+    grid_plot(train_config, reconstructs_shuffled, labels_shuffled, num_rows=5, num_cols=5, show=True)
 
 if __name__ == '__main__':
     # Parse comand line arguments
