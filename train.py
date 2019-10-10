@@ -9,6 +9,7 @@ from progressbar import ProgressBar
 from utils import TrainConfig, TFScalarVariableWrapper, TFSaverWrapper
 from input_pipeline import AnomalyDetectionDataset
 from visualize import grid_plot
+from default_params import complete_train_config
 
 def get_train_config(args, json_path):
     """ Create a TrainConfig object from parsed arguments or load it from .json file """
@@ -18,13 +19,19 @@ def get_train_config(args, json_path):
     else:
         train_config = TrainConfig(**args.__dict__)
         print('A TrainConfig object is creatd from parsed arguements')
+
+    # Complete train_config by overiding None arguments by default hyperparameters
+    complete_train_config(train_config)
     return train_config
 
 def get_dataset(train_config):
     """ Get AnomalyDetectionDataset objects from train and test set """
     # Import DatasetMarker class and get features and labels  
     dataset_module = import_module('data.{}'.format(train_config.dataset))
-    dataset_maker = dataset_module.DatasetMaker(train_config.anomaly_labels)
+    if train_config.dataset == 'kdd':
+        dataset_maker = dataset_module.DatasetMaker()
+    else:
+        dataset_maker = dataset_module.DatasetMaker(train_config.anomaly_labels)
     features_train, labels_train = dataset_maker.get_train_set()
     features_test, labels_test = dataset_maker.get_test_set()
 
@@ -47,7 +54,10 @@ def get_model(x_tensor_train,
     """ Create a model instance from given dataset """
 
     # Import model module
-    model_module = import_module('model.{}.{}'.format(train_config.model, train_config.dataset))
+    if train_config.version is not None:
+        model_module = import_module('model.{}.{}'.format(train_config.model, train_config.dataset + '_' + train_config.version))
+    else:
+        model_module = import_module('model.{}.{}'.format(train_config.model, train_config.dataset))
 
     # Create Model object 
     if train_config.model == 'anogan':
@@ -63,6 +73,13 @@ def get_model(x_tensor_train,
                                    batch_size=train_config.batch_size,
                                    latent_dim=train_config.latent_dim,
                                    learning_rate=train_config.learning_rate)
+    elif train_config.model == 'fbgan':
+        model = model_module.FBGAN(x_tensor_train,
+                                   z_tensor_train,
+                                   batch_size=train_config.batch_size,
+                                   latent_dim=train_config.latent_dim,
+                                   learning_rate=train_config.learning_rate,
+                                   use_only_fm_loss=train_config.only_fm_loss)
     else:
         raise ValueError('Invalid argument has been passed for train_config.model: {}'.format(train_config.model))
     return model
@@ -98,8 +115,9 @@ def main(args):
         for k, v in model.summary_vars.items():
             tf.contrib.summary.scalar(k + '_summary', v.variable, step=epoch.variable)
 
-        x_fake = model.decoder(z_random, is_training=False)
-        tf.contrib.summary.image('generated_images', x_fake, max_images=25, step=epoch.variable)
+        if train_config.dataset in ['mnist', 'svhn']:
+            x_fake = model.decoder(z_random, is_training=False)
+            tf.contrib.summary.image('generated_images', x_fake, max_images=25, step=epoch.variable)
 
     # Create saver
     saver = TFSaverWrapper(save_dir, tf.global_variables())
@@ -164,14 +182,17 @@ if __name__ == '__main__':
     # Essential arguments
     parser.add_argument('--anomaly_labels', help='List of anomaly labels', type=int, nargs='+', required=True)
     parser.add_argument('--latent_dim', help='latent dimension size', type=int)
+    parser.add_argument('--version', help='Version of model. Each version has different architectural structure', type=str)
 
     # Hyperparameters associated with optimization
-    parser.add_argument('--batch_size', help='Batch size', type=int, default=100)
-    parser.add_argument('--learning_rate', help='Learning rate', type=float, default=1e-3)
-    parser.add_argument('--decay_rate', help='Decay rate for weight decay regularization', type=float, default=1e-4)
-    parser.add_argument('--end_epoch', help='End epoch for training', type=int)
-    parser.add_argument('--iters_per_epoch', help='Number of iterations per one epoch', type=int, default=300)
+    parser.add_argument('--batch_size', help='Batch size', type=int)
+    parser.add_argument('--learning_rate', help='Learning rate', type=float)
+    parser.add_argument('--end_epoch', help='End epoch for training', type=int, default=100)
+    parser.add_argument('--iters_per_epoch', help='Number of iterations per one epoch', type=int)
     parser.add_argument('--random_seed', help='Random seed to be used', type=int, default=0)
+
+    # Hyperparameters for particular dataset
+    parser.add_argument('--only_fm_loss', help='If this argument is passed, use only fm loss for training encoder and decoder', action='store_true')
 
     # Parse command arguments
     args = parser.parse_args()

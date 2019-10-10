@@ -32,7 +32,8 @@ class BaseFBGAN:
                  z_tensor_train,
                  batch_size,
                  latent_dim,
-                 learning_rate):
+                 learning_rate,
+                 use_only_fm_loss):
         """ Initialize FBGAN object for training and evaluation of FBGAN model
 
         Args:
@@ -41,6 +42,7 @@ class BaseFBGAN:
             batch_size: Integer, batch size used for training
             latent_dim: Integer, size of latent variable dimension
             learning_rate: Tensor or scala. Learning rate to be used for optimization.
+            use_only_fm_loss: Boolean, whether to use only fm loss for training encoder and decoder
         """
         self.batch_size = batch_size
         self.latent_dim = latent_dim
@@ -70,12 +72,12 @@ class BaseFBGAN:
                 self.loss['discriminator_forward'] = tf.negative(tf.reduce_mean(tf.log(y_real_f + _TINY) + tf.log(1.0 - y_fake_f + _TINY)))
             with tf.name_scope('backward_discriminator_loss'):
                 disc_loss_b = tf.negative(tf.reduce_mean(tf.log(y_real_b + _TINY) + tf.log(1.0 - y_fake_b + _TINY)))
-                self.loss['discriminator_backward'] = disc_loss_b + fm_loss_gen
+                self.loss['discriminator_backward'] = fm_loss_gen if use_only_fm_loss else disc_loss_b + fm_loss_gen
             with tf.name_scope('generator_loss'):
                 self.loss['generator'] = tf.negative(tf.reduce_mean(tf.log(y_fake_f + _TINY)))
             with tf.name_scope('encoder_loss'):
                 gen_loss_b = tf.negative(tf.reduce_mean(tf.log(y_fake_b + _TINY)))
-                self.loss['encoder'] = gen_loss_b + fm_loss_enc
+                self.loss['encoder'] = fm_loss_enc if use_only_fm_loss else gen_loss_b + fm_loss_enc
 
         self.train_op = {}
         self.ema = tf.train.ExponentialMovingAverage(decay=0.999)

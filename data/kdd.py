@@ -1,113 +1,109 @@
-import logging
+import sys
 import numpy as np
 import pandas as pd
-from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import MinMaxScaler
 
-logger = logging.getLogger(__name__)
+_RANDOM_SEED = 42
+_ANOMALY_RATIO = 0.2 # ratio of abnormal samples
+_DATA_PATH = './source/kdd/kddcup.data_10_percent_corrected'
 
-class Dataset:
-    """ Dataset object for anomaly detection based on kdd 10 percent dataset """
+class DatasetMaker:
+    """ DatasetMaker class for KDD dataset to use for an anomaly detection task. Anomaly class is 1 (positive), Normal class is 0 (negative). """
 
     def __init__(self):
-        pass
+        """ Initialize DatasetMaker instance
 
-    def get_train(*args):
-        """Get training dataset for KDD 10 percent"""
-        return _get_adapted_dataset("train")
-
-    def get_test(*args):
-        """Get testing dataset for KDD 10 percent"""
-        return _get_adapted_dataset("test")
-
-    def _get_dataset():
-        """ Gets the basic dataset
-        Returns :
-                dataset (dict): containing the data
-                    dataset['x_train'] (np.array): training images shape
-                    (?, 120)
-                    dataset['y_train'] (np.array): training labels shape
-                    (?,)
-                    dataset['x_test'] (np.array): testing images shape
-                    (?, 120)
-                    dataset['y_test'] (np.array): testing labels shape
-                    (?,)
+        Returns:
+            dataset_maker: DatasetMaker object whose get_train_set and get_test_set methods return dataset as numpy array.
         """
-        col_names = _col_names()
-        df = pd.read_csv("data/kddcup.data_10_percent_corrected", header=None, names=col_names)
+        # Define random seed to shuffle original dataset
+        self.random_state = np.random.RandomState(seed=_RANDOM_SEED)
+        # Build dataset for anomaly detection experiment 
+        self._make_dataset()
+
+    def get_train_set(self):
+        """ Get training set for anomaly detection.
+
+        Returns:
+            features: 4d-numpy array of shape [nb_data, height, width, channel].
+            labels: 1d-numpy array of shape [nb_data, 1].
+        """
+        return self.features_train, self.labels_train
+
+    def get_test_set(self):
+        """ Get test set for anomaly detection.
+
+        Returns:
+            features: 4d-numpy array of shape [nb_data, height, width, channel].
+            labels: 1d-numpy array of shape [nb_data].
+        """
+        return self.features_test, self.labels_test
+
+    def _make_dataset(self):
+        df = pd.read_csv(_DATA_PATH, header=None, names=self._col_names())
         text_l = ['protocol_type', 'service', 'flag', 'land', 'logged_in', 'is_host_login', 'is_guest_login']
 
         for name in text_l:
-            _encode_text_dummy(df, name)
+            self._encode_text_dummy(df, name)
 
         labels = df['label'].copy()
         labels[labels != 'normal.'] = 0
         labels[labels == 'normal.'] = 1
-
         df['label'] = labels
 
-        df_train = df.sample(frac=0.5, random_state=42)
+        # split the whole dataset fifty to fifty
+        df_train = df.sample(frac=0.5, random_state=_RANDOM_SEED)
         df_test = df.loc[~df.index.isin(df_train.index)]
 
-        x_train, y_train = _to_xy(df_train, target='label')
+        x_train, y_train = self._to_xy(df_train, target='label')
         y_train = y_train.flatten().astype(int)
-        x_test, y_test = _to_xy(df_test, target='label')
+        x_test, y_test = self._to_xy(df_test, target='label')
         y_test = y_test.flatten().astype(int)
 
         x_train = x_train[y_train != 1]
         y_train = y_train[y_train != 1]
 
+        # Scaling data
         scaler = MinMaxScaler()
         scaler.fit(x_train)
         scaler.transform(x_train)
         scaler.transform(x_test)
 
-        dataset = {}
-        dataset['x_train'] = x_train.astype(np.float32)
-        dataset['y_train'] = y_train.astype(np.float32)
-        dataset['x_test'] = x_test.astype(np.float32)
-        dataset['y_test'] = y_test.astype(np.float32)
+        self.features_train = x_train.astype(np.float32)
+        self.labels_train = y_train.astype(np.float32)
+        self.features_test = x_test.astype(np.float32)
+        self.labels_test = y_test.astype(np.float32)
 
-        return dataset
+        self._make_testset()
 
-    def _get_adapted_dataset(split):
-        """ Gets the adapted dataset for the experiments
+    def _make_testset(self):
+        """Adapt the ratio of normal/anomalous data"""
+        x_inliers = self.features_test[self.labels_test == 0]
+        x_outliers = self.features_test[self.labels_test == 1]
 
-        Args :
-                split (str): train or test
-        Returns :
-                (tuple): <training, testing> images and labels
-        """
-        dataset = _get_dataset()
-        key_img = 'x_' + split
-        key_lbl = 'y_' + split
+        # Shuffle outlier samples in test set
+        indices = self.random_state.permutation(x_outliers.shape[0])
+        x_outliers = x_outliers[indices]
 
-        if split != 'train':
-            dataset[key_img], dataset[key_lbl] = _adapt(dataset[key_img],
-                                                        dataset[key_lbl])
+        # Get outliers for test set to have a pre-defined anomaly ratio
+        rho = _ANOMALY_RATIO
+        nb_inliers_test = x_inliers.shape[0]
+        nb_outliers_test = int(nb_inliers_test*rho/(1-rho))
+        outliers_test = x_outliers[:nb_outliers_test]
 
-        return (dataset[key_img], dataset[key_lbl])
+        x_test = np.concatenate((x_inliers, outliers_test), axis=0)
+        y_test = np.concatenate((np.zeros(nb_inliers_test), np.ones(nb_outliers_test)), axis=0)
 
-    def _encode_text_dummy(df, name):
-        """Encode text values to dummy variables(i.e. [1,0,0],[0,1,0],[0,0,1]
-        for red,green,blue)
-        """
-        dummies = pd.get_dummies(df.loc[:,name])
-        for x in dummies.columns:
-            dummy_name = "{}-{}".format(name, x)
-            df.loc[:, dummy_name] = dummies[x]
-        df.drop(name, axis=1, inplace=True)
+        self.features_test, self.labels_test = self._permutate(x_test, y_test)
 
-    def _to_xy(df, target):
-        """Converts a Pandas dataframe to the x,y inputs that TensorFlow needs"""
-        result = []
-        for x in df.columns:
-            if x != target:
-                result.append(x)
-        dummies = df[target]
-        return df.as_matrix(result).astype(np.float32), dummies.as_matrix().astype(np.float32)
+    def _permutate(self, features, labels):
+        """ permutate features and labels """
+        perm_idx = self.random_state.permutation(features.shape[0])
+        features_perm = features[perm_idx]
+        labels_perm = labels[perm_idx]
+        return features_perm, labels_perm
 
-    def _col_names():
+    def _col_names(self):
         """Column names of the dataframe"""
         return ["duration","protocol_type","service","flag","src_bytes",
         "dst_bytes","land","wrong_fragment","urgent","hot","num_failed_logins",
@@ -120,34 +116,20 @@ class Dataset:
         "dst_host_srv_diff_host_rate","dst_host_serror_rate","dst_host_srv_serror_rate",
         "dst_host_rerror_rate","dst_host_srv_rerror_rate","label"]
 
-    def _adapt(x, y, rho=0.2):
-        """Adapt the ratio of normal/anomalous data"""
+    def _encode_text_dummy(self, df, name):
+        """Encode text values to dummy variables (i.e. [1,0,0],[0,1,0],[0,0,1] for red,green,blue) """
+        dummies = pd.get_dummies(df.loc[:,name])
+        for x in dummies.columns:
+            dummy_name = "{}-{}".format(name, x)
+            df.loc[:, dummy_name] = dummies[x]
+        df.drop(name, axis=1, inplace=True)
 
-        # Normal data: label =0, anomalous data: label =1
-
-        rng = np.random.RandomState(42) # seed shuffling
-
-        inliersx = x[y == 0]
-        inliersy = y[y == 0]
-        outliersx = x[y == 1]
-        outliersy = y[y == 1]
-
-        size_outliers = outliersx.shape[0]
-        inds = rng.permutation(size_outliers)
-        outliersx, outliersy = outliersx[inds], outliersy[inds]
-
-        size_test = inliersx.shape[0]
-        out_size_test = int(size_test*rho/(1-rho))
-
-        outestx = outliersx[:out_size_test]
-        outesty = outliersy[:out_size_test]
-
-        testx = np.concatenate((inliersx,outestx), axis=0)
-        testy = np.concatenate((inliersy,outesty), axis=0)
-
-        size_test = testx.shape[0]
-        inds = rng.permutation(size_test)
-        testx, testy = testx[inds], testy[inds]
-
-        return testx, testy
+    def _to_xy(self, df, target):
+        """ Converts a Pandas dataframe to the x,y inputs that TensorFlow needs """
+        result = []
+        for x in df.columns:
+            if x != target:
+                result.append(x)
+        dummies = df[target]
+        return df.as_matrix(result).astype(np.float32), dummies.as_matrix().astype(np.float32)
 

@@ -1,11 +1,8 @@
 import tensorflow as tf, numpy as np
 import matplotlib.pyplot as plt
 
-_RANDOM_SEED = 0
+_RANDOM_SEED = 42
 _TRAIN_SET_RATIO = 0.8 # Proportion of total normal data to be used as train_set
-_TRAIN_PATH = './data/source/svhn/train_32x32.mat'
-_TEST_PATH = './data/source/svhn/test_32x32.mat'
-_EXTRA_PATH = './data/source/svhn/extra_32x32.mat'
 
 class DatasetMaker:
     """ DatasetMaker class to transform MNIST dataset for an anomaly detection task. Anomaly class is 1 (positive), Normal class is 0 (negative). """

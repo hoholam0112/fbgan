@@ -16,7 +16,7 @@ def grid_plot(train_config, images, labels, num_rows=5, num_cols=5, show=False):
         if train_config.dataset == 'mnist':
             plt.imshow(np.squeeze(images[i]), cmap='gray')
         else:
-            plt.imshow(images[i])
+            plt.imshow((images[i]+1)/2)
         plt.title(labels[i])
         plt.axis('off')
 

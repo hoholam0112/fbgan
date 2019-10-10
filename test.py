@@ -5,7 +5,8 @@ from collections import defaultdict
 import tensorflow as tf, numpy as np
 import matplotlib.pyplot as plt
 import progressbar
-from sklearn.metrics import roc_auc_score, precision_recall_curve, auc, roc_curve
+from sklearn.metrics import roc_auc_score, precision_recall_curve, auc, roc_curve, \
+        precision_recall_fscore_support
 
 # Custom libs
 from utils import TrainConfig, TFScalarVariableWrapper, TFSaverWrapper
@@ -36,10 +37,17 @@ def compute_f1_score(y_trues, y_preds, prevalance):
         prevalance: float, positive (anomaly) class ratio.
 
     Returns:
-        score: float, AUPR score
-
+        precision: float, precision
+        recall: float, recall
+        f1_score: float, F1-score, harmornic mean of precision and recall
     """
-    return NotImplementedError('compute_f1_score is called as being not implemented')
+    assert prevalance >= 0 and prevalance <= 1
+
+    cut = np.percentile(y_preds, (1.0 - prevalance)*100)
+    y_preds_bin = [(1 if x >= cut else 0) for x in y_preds]
+
+    precision, recall, f1_score, _ = precision_recall_fscore_support(y_trues, y_preds_bin, average='binary')
+    return precision, recall, f1_score
 
 def main(args):
     # Load a TrainConfig object from .json file if it exist
@@ -110,23 +118,29 @@ def main(args):
 
     # Compute evaluation metrics
     metrics = {}
-    metrics['AUROC'] = roc_auc_score(output_values_total['label'], output_values_total['score'])
-    metrics['AUPR'] = compute_aupr_score(output_values_total['label'], output_values_total['score'])
+    if train_config.dataset in ['kdd']:
+        precision, recall, f1_score = compute_f1_score(output_values_total['label'], output_values_total['score'], 0.2)
+        metrics['precision'] = precision
+        metrics['recall'] = recall
+        metrics['f1_score'] = f1_score
+    else:
+        metrics['AUROC'] = roc_auc_score(output_values_total['label'], output_values_total['score'])
+        metrics['AUPR'] = compute_aupr_score(output_values_total['label'], output_values_total['score'])
 
     # Show performance of a model
     for k, v in metrics.items():
         print('{}: {:.4f}'.format(k,v))
 
-    # Show qualitative results
-    indices_rand = np.random.permutation(output_values_total['x_real'].shape[0])
-    images_shuffled = output_values_total['x_real'][indices_rand]
-    reconstructs_shuffled = output_values_total['x_hat'][indices_rand]
-    labels_shuffled = output_values_total['label'][indices_rand]
+    if train_config.dataset in ['svhn', 'mnist']:
+        # Show qualitative results
+        indices_rand = np.random.permutation(output_values_total['x_real'].shape[0])
+        images_shuffled = output_values_total['x_real'][indices_rand]
+        reconstructs_shuffled = output_values_total['x_hat'][indices_rand]
+        labels_shuffled = output_values_total['label'][indices_rand]
 
-
-    grid_plot(train_config, images_shuffled, labels_shuffled, num_rows=5, num_cols=5, show=False)
-    grid_plot(train_config, x_fake_val, np.zeros([x_fake_val.shape[0]]), num_rows=5, num_cols=5, show=False)
-    grid_plot(train_config, reconstructs_shuffled, labels_shuffled, num_rows=5, num_cols=5, show=True)
+        grid_plot(train_config, images_shuffled, labels_shuffled, num_rows=5, num_cols=5, show=False)
+        grid_plot(train_config, x_fake_val, np.zeros([x_fake_val.shape[0]]), num_rows=5, num_cols=5, show=False)
+        grid_plot(train_config, reconstructs_shuffled, labels_shuffled, num_rows=5, num_cols=5, show=True)
 
 if __name__ == '__main__':
     # Parse comand line arguments
